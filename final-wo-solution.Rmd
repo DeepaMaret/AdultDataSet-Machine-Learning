@@ -1,0 +1,777 @@
+---
+title: 'CSCI E-63C: Final Exam'
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(MASS)
+library(randomForest)
+library(ROCR)
+library(e1071)
+library(caret)
+library(plyr)
+```
+
+# Preface
+
+For the final exam/project we will develop classification models using several approaches and compare their performance on a new dataset -- so-called "Census Income" from UCI ML.  It is available at UCI ML web site, but so that we are not at the mercy of UCI ML availability, there is also a local copy of it in our website in Canvas as a zip-archive of all associated files.  Among other things, the description for this dataset also presents performance (prediction accuracy) observed by the dataset providers using variety of modeling techniques -- this supplies a context for the errors of the models we will develop here.
+
+Please note that the original data has been split up into training and test subsets, but there doesn't seem to be anything particular about that split, so we might want to pool those two datasets together and split them into training and test as necessary ourselves. As you do that, please check that the attribute levels are consistent between those two files.  For instance, the categorized income levels are indicated using slightly different notation in their training and test data.   By now it should be quite straightforward for you to correct that when you pool them together.
+
+Also, please note that there is non-negligible number of rows with missing values that for most analyses cannot be included without modification in the computation.  Please decide how you want to handle them and proceed accordingly.  The simplest and perfectly acceptable approach would be to exclude those observations from the rest of the analyses, but if you have time and inclination to investigate the impact of imputing them by various means, you are welcome to try.
+
+Attribute called "final weight" in the dataset description represents demographic weighting of these observations.  Please disregard it for the purposes of this assignment.
+
+Additionally, several attributes in this dataset are categorical variables with more than two levels (e.g. native country, occupation, etc.).  Please make sure to translate them into corresponding sets of dummy indicator variables for the methods that require such conversion (e.g. PCA) -- R function `model.matrix` can be convenient for this, instead of generating those 0/1 indicators for each level of the factor manually (which is still perfectly fine).  Some of those multi-level factors contain very sparsely populated categories -- e.g. occupation "Armed-Forces" or work class "Never-worked" -- it is your call whether you want to keep those observations in the data or exclude also on the basis that there is not enough data to adequately capture the impact of those categories. Feel free to experiment away!
+
+Among the multi-level categorical attributes, native country attribute has the largest number of levels -- several folds higher than any other attribute in this dataset -- some of which have relatively few observations.  This associated increase in dimensionality of the data may not be accompanied by a corresponding gain of resolution -- e.g. would we expect this data to support the *difference* in income between descendants from Peru and Nicaragua, for example, or from Cambodia and Laos?  Please feel free to evaluate the impact of inclusion and/or omission of this attribute in/from the model and/or discretizing it differently (e.g. US/non-US, etc.).
+
+Lastly, the size of this dataset can make some of the modeling techniques run slower than what we were typically encountering in this class.  You may find it helpful to do some of the exploration and model tuning on multiple random samples of smaller size as you decide on useful ranges of parameters/modeling choices, and then only perform a final run of fully debugged and working code on the full dataset.
+
+#SOLUTIONS
+
+#### Preparing Census Income Data
+
+#### Census Income Data is stored into "adultDat" and preparing "adultDat" for solving Final Exam questions. 
+```{r}
+# Loading the adult data and naming columns
+adult <- read.table("C:/Users/deepa/Desktop/HARVARD/CSCI E-63C/Data Sets/adult.data",sep=",",header=FALSE,quote="")
+colnames(adult) <- c("age","work_class","fnlwgt","education","education_num","marital_status","occupation","relationship","race","sex","capital_gain","capital_loss","hours_per_week","native_country","income")
+
+# Loading the adult.test data and naming columns
+adult_test <-read.table("C:/Users/deepa/Desktop/HARVARD/CSCI E-63C/Data Sets/adult.test",sep=",",header=FALSE,quote="")
+colnames(adult_test) <- c("age","work_class","fnlwgt","education","education_num","marital_status","occupation","relationship","race","sex","capital_gain","capital_loss","hours_per_week","native_country","income")
+adultDat <- rbind(adult,adult_test)   # Combine adult data and adult_test data
+
+#class(adultDat)
+#dim(adultDat)
+
+# removing column "fnlwgt" as per preface
+adultDat <- subset(adultDat,select=-fnlwgt)
+
+# removing education variable since I will use only education.num instead of education
+adultDat <- subset(adultDat,select=-education)
+
+#Reordering columns; continuous variables followed by categorical variables
+order(colnames(adultDat))
+adultDat <- adultDat[, c(1,3,11,9,10,4,12,5,7,6,8,2,13)]
+
+dim(adultDat)
+#class(adultDat)
+#str(adultDat)
+summary(adultDat)
+```
+
+
+#### income variable (Dependent variable). Reduced levels to 2 (<=50K and >50K)
+```{r}
+# Cleaning up income variable. reducing levels to 2 from 4
+#levels(adultDat$income)
+adultDat$income[adultDat$income == " >50K." ] <- " >50K" #assigning adultDat$income == " >50K." to " >50K"
+adultDat$income[adultDat$income == " <=50K."] <- " <=50K" #assigning adultDat$income == " >50K." to " >50K"
+#summary(adultDat$income)
+#levels(adultDat$income)
+adultDat$income <- factor(adultDat$income) # levels are not removed.so run factor()
+#levels(adultDat$income)
+summary(adultDat$income) 
+```
+
+#### Quantitative variables
+```{r}
+# Quantitative variables
+summary(adultDat$age)
+summary(adultDat$education_num)
+summary(adultDat$hours_per_week)
+summary(adultDat$capital_gain)
+summary(adultDat$capital_loss)
+```
+
+##### Histogram of quantitative variables
+```{r,fig.width=8,fig.height=8}
+# Histogram of quantitative variables
+old.par <- par(mfrow =c(2,3),ps=16)
+hist(adultDat$age,xlab="age",main="Age",col="orange")
+hist(adultDat$education_num,xlab="education",main="Education",col="light blue")
+hist(adultDat$hours_per_week,xlab="hours",main="Hours per Week",col="light green")
+hist(adultDat$capital_gain,xlab="capital_gain",main="Capital Gain",col="purple")
+hist(adultDat$capital_loss,xlab="capital_loss",main="Capital Loss",col="violet")
+par(old.par)
+```
+
+##### Plotting quantitative variables against income
+```{r,fig.width=8,fig.height=8}
+# Plotting quantitative variables against income
+iTmp <- as.numeric(adultDat$income)
+pairs(adultDat[,1:5],col=iTmp,pch=iTmp)
+```
+
+##### Plotting quantitative variables against income
+```{r,fig.width=8,fig.height=8}
+# Plotting quantitative variables against income
+old.par <- par(mfrow =c(2,3),ps=16)
+plot(adultDat$income,adultDat$age,col=as.numeric(adultDat$income)+1,xlab="income",ylab="age")
+plot(adultDat$income,adultDat$education_num,col=as.numeric(adultDat$income)+2,xlab="income",ylab="education_in_years")
+plot(adultDat$income,adultDat$hours_per_week,col=as.numeric(adultDat$income)+3,xlab="income",ylab="hours_per_week")
+plot(adultDat$income,adultDat$capital_gain,col=as.numeric(adultDat$income)+4,xlab="income",ylab="capital_gain")
+plot(adultDat$income,adultDat$capital_loss,col=as.numeric(adultDat$income)+5,xlab="income",ylab="capital_loss")
+par(old.par)
+```
+
+
+#### Categorical Variables
+```{r}
+# categorical variables
+summary(adultDat[,6:12])
+```
+
+##### maritial_status. reduced levels to 2 (Married and Single)
+```{r}
+# Cleaning up maritial_status
+#levels(adultDat$marital_status)
+#summary(adultDat$marital_status)
+#table(adultDat$income,adultDat$marital_status)
+
+# Adding levels Married and Single  and thus reducing 7 levels to 2 levels.
+levels(adultDat$marital_status) <- c(levels(adultDat$marital_status)," Married"," Single") #creating new two levels " Married" and " Single"
+adultDat$marital_status[adultDat$marital_status == " Divorced"] <- " Single" #assigning adultDat$marital_status == " Divorced" to " Single"
+adultDat$marital_status[adultDat$marital_status == " Never-married"] <- " Single" #assigning adultDat$marital_status == " Never-married" to " Single"
+adultDat$marital_status[adultDat$marital_status == " Separated"] <- " Single" #assigning adultDat$marital_status == " Separated" to " Single
+adultDat$marital_status[adultDat$marital_status == " Widowed"] <- " Single" #assigning adultDat$marital_status == " Widowed" to " Single
+
+
+adultDat$marital_status[adultDat$marital_status == " Married-AF-spouse"] <- " Married" #assigning adultDat$marital_status == " Married-AF-spouse" to " Married"
+adultDat$marital_status[adultDat$marital_status == " Married-civ-spouse"] <- " Married" #assigning adultDat$marital_status == " Married-civ-spouse" to " Married"
+adultDat$marital_status[adultDat$marital_status == " Married-spouse-absent"] <- " Married" #assigning adultDat$marital_status == " Married-spouse-absent" to " Married"
+
+adultDat$marital_status <- factor(adultDat$marital_status)
+#levels(adultDat$marital_status)
+#summary(adultDat$marital_status)
+dim(adultDat)
+table(adultDat$income,adultDat$marital_status)
+```
+
+##### native_country variable. Reduced levels to 2 (US and Non-US)
+```{r}
+# Cleaning up native_country variable
+#levels(adultDat$native_country)
+#summary(adultDat$native_country)
+#table(adultDat$income,adultDat$native_country)
+adultDat <- adultDat[adultDat$native_country != " ?",] #remove all rows (857) with adultDat$native_country== " ?". Now adultDat will have only 48,842-857= 47,985 observations
+
+# Adding levels US and Non-US  and thus reducing 42 levels to 2 levels.
+levels(adultDat$native_country) <- c(levels(adultDat$native_country)," US"," Non-US") #creating new two levels " US" and " Non-US"
+
+adultDat$native_country[adultDat$native_country != " United-States"] <- " Non-US" #assigning adultDat$marital_status != " United-States" to " Non-US"
+adultDat$native_country[adultDat$native_country == " United-States"] <- " US" #assigning adultDat$marital_status == " United-States" to " US"
+adultDat$native_country <- factor(adultDat$native_country)
+#summary(adultDat$native_country)
+#levels(adultDat$native_country)
+dim(adultDat)
+table(adultDat$income,adultDat$native_country)
+```
+
+##### occupation variable. 14 levels. Removed rows with " ?" and " Armed-Forces".
+```{r}
+# Cleaning up occupation variable
+#levels(adultDat$occupation) #15 levels
+#summary(adultDat$occupation)
+#table(adultDat$income,adultDat$occupation)
+adultDat <- adultDat[adultDat$occupation != " ?",] #remove all rows (2,763) with adultDat$occupation== " ?". Now adultDat will have only 47,985-2,763= 45,222 observations
+adultDat <- adultDat[adultDat$occupation != " Armed-Forces",] # excluding " Armed-Forces" on the basis that there is not enough data to adequately capture the impact. removed all rows (14 rows) with adultDat$occupation== " Armed-Forces". Now adultDat will have only 45,222-14= $45,208 observations
+adultDat$occupation <- factor(adultDat$occupation)
+#levels(adultDat$occupation) # Now adultDat$occupation has only 14 levels
+#summary(adultDat$occupation)
+dim(adultDat)
+table(adultDat$income,adultDat$occupation)
+```
+
+##### race variable. Reduced to 2 levels (White and Non-White)
+```{r}
+# Cleaning up race variable
+#levels(adultDat$race)
+#summary(adultDat$race)
+#table(adultDat$income,adultDat$race)
+# Adding another levels Non-White and thus reducing 5 levels to 2 levels.
+levels(adultDat$race) <- c(levels(adultDat$race)," Non-White") #creating another level " Non-White"
+adultDat$race[adultDat$race != " White"] <- " Non-White" #assigning adultDat$race != " White" to " Non-White"
+adultDat$race <- factor(adultDat$race)
+#levels(adultDat$race) # Now adultDat$race has only 2 levels
+#summary(adultDat$race)
+dim(adultDat)
+table(adultDat$income,adultDat$race)
+```
+
+##### relationship variable. 6 levels
+```{r}
+#levels(adultDat$relationship)
+#summary(adultDat$relationship)
+table(adultDat$income,adultDat$relationship)
+```
+
+##### sex variable. 2 levels
+```{r}
+#levels(adultDat$sex)
+#summary(adultDat$sex)
+table(adultDat$income,adultDat$sex)
+```
+
+##### work_class variable. reduced levels to 3 (Private, gov, and Self-emp). Removed levels " Without-pay" and " Never-worked".
+```{r}
+# Cleaning up work_class variable
+#dim(adultDat)
+#levels(adultDat$work_class) # 9 levels
+#summary(adultDat$work_class)
+adultDat <- adultDat[adultDat$work_class != " Without-pay",] #remove all rows (21 rows) with adultDat$work_class== " Without-pay"
+levels(adultDat$work_class) <- c(levels(adultDat$work_class)," gov"," Self-emp") #creating new levels " gov" and " Self-emp"
+adultDat$work_class[adultDat$work_class == " Federal-gov"] <- " gov" #assigning adultDat$work_class == " Federal-gov" to" gov"
+adultDat$work_class[adultDat$work_class == " State-gov" ] <- " gov" #assigning adultDat$work_class == " State-gov" to" gov"
+adultDat$work_class[adultDat$work_class == " Local-gov"] <- " gov" #assigning adultDat$work_class == " Local-gov" to" gov"
+adultDat$work_class[adultDat$work_class == " Self-emp-inc"] <- " Self-emp" #assigning adultDat$work_class == " Self-emp-inc" to " Self-emp"
+adultDat$work_class[adultDat$work_class == " Self-emp-not-inc" ] <- " Self-emp" #assigning adultDat$work_class == "Self-emp-not-inc" to " Self-emp"
+#levels(adultDat$work_class) # still 9 levels
+#summary(adultDat$work_class)
+adultDat$work_class <- factor(adultDat$work_class)
+#levels(adultDat$work_class) # only 3 levels
+#summary(adultDat$work_class)
+dim(adultDat) # new data should have 48,208-21= 45,187 rows.
+table(adultDat$income,adultDat$work_class)
+```
+
+# Problem 1: univariate and unsupervised analysis (20 points)
+
+Download and read "Census Income" data into R and prepare graphical and numerical summaries of it: e.g. histograms of continuous attributes, contingency tables of categorical variables, scatterplots of continuous attributes with some of the categorical variables indicated by color/symbol shape, etc.  Perform principal components analysis of this data (do you need to scale it prior to that? how would you represent multilevel categorical attributes to be used as inputs for PCA?) and plot observations in the space of the first few principal components with subjects' gender and/or categorized income indicated by color/shape of the symbol.  Perform univariate assessment of associations between outcome we will be modeling and each of the attributes (e.g. t-test or logistic regression for continuous attributes, contingency tables/Fisher exact test/$\chi^2$ test for categorical attributes).  Summarize your observations from these assessments: does it appear that there is association between outcome and predictors? Which predictors seem to be more/less relevant?
+
+#### CONCLUSION
+
+#### Based on the preliminary exploration (including scatter plot, summary statistics, boxplots, distributions and univariate assessment), I can conclude that several variables have significant association with income and may have explanatory power in distinguishing the household income greater than and less than $50,000 per year. Age, type of family,hours per week, number of years in education, capital gain/ loss are highly associated with predicting the household income <=50K or >50K.In general, complete family with either man or woman as householders are more likely to have incomes more than $50,000 than other family types. Householders with longer education have greater chance to earn incomes greater than $50,000 / year.The longer the householders work the greater change to have household incomes more than $50,000 / year. 
+
+#### The first principal component explains about 24% of variance in the scaled data. Th efirst 5 variables in the first principal components are hours_per_week, education_num, age,capital_gain, and capital_loss (see below for details under PCA section)
+
+##### Made a copy of adultDat and naming the new data as cenDat. cenDat has 45,187 observations and 13 variables.
+##### 5 quantitative variables and 8 categorical variables
+```{r}
+# Making a copy of adultDat and naming the new data as cenDat
+cenDat <- adultDat
+str(cenDat)
+```
+
+##### Graphical Summaries
+```{r}
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+
+```{r,fig.width=12,fig.height=6}
+p1 <- ggplot(cenDat,aes(x=age,y=education_num,colour=income))+geom_point()
+p2 <- ggplot(cenDat,aes(x=age,y=hours_per_week,colour=income))+geom_point()
+p3 <- ggplot(cenDat,aes(x=education_num,y=hours_per_week,colour=income))+geom_point()
+p4 <- ggplot(cenDat,aes(x=capital_gain,y=capital_loss,colour=income))+geom_point()
+multiplot(p1,p2,p3,p4,cols=2)
+```
+
+```{r,fig.width=12,fig.height=6}
+p1 <- ggplot(cenDat,aes(x=income,y=age,colour=income))+geom_boxplot()
+p2 <- ggplot(cenDat,aes(x=income,y=education_num,colour=income))+geom_boxplot()
+p3 <- ggplot(cenDat,aes(x=income,y=hours_per_week,colour=income))+geom_boxplot()
+p4 <- ggplot(cenDat,aes(x=income,y=capital_gain,colour=income))+geom_boxplot()
+p5 <- ggplot(cenDat,aes(x=income,y=capital_loss,colour=income))+geom_boxplot()
+multiplot(p1,p2,p3,p4,p5,cols=3)
+```
+
+```{r,fig.width=12,fig.height=6}
+p1 <- ggplot(data=cenDat, aes(cenDat$age)) + 
+geom_histogram(breaks=seq(15,90, by=5),col="black",fill="green",alpha=0.2)+
+geom_vline(xintercept=mean(cenDat$age),colour="red",size=2)+
+labs(title="Age (mean=38)")+
+labs(x="age",y="count")
+
+p2 <- ggplot(data=cenDat, aes(cenDat$education_num)) + 
+geom_histogram(breaks=seq(1,16, by=2),col="black",fill="blue",alpha=0.2)+
+geom_vline(xintercept=mean(cenDat$education_num),colour="red",size=2)+
+labs(title="Years of Education (mean=10")+
+labs(x="years",y="count")
+
+p3 <- ggplot(data=cenDat, aes(cenDat$hours_per_week)) + 
+geom_histogram(breaks=seq(5,100, by=5),col="black",fill="orange",alpha=0.2)+
+geom_vline(xintercept=mean(cenDat$hours_per_week),colour="red",size=2)+
+labs(title="Hours per Week (mean=40)")+
+labs(x="hours",y="count")
+multiplot(p1,p2,p3,cols=3)
+```
+
+##### Numerical Summaries
+```{r}
+ftable(cenDat[,c(6,13)],col.vars = "income")
+```
+
+```{r}
+ftable(cenDat[,c(7,13)],col.vars = "income")
+```
+
+```{r}
+ftable(cenDat[,c(8,13)],col.vars = "income")
+```
+
+```{r}
+ftable(cenDat[,c(9,13)],col.vars = "income")
+```
+
+```{r}
+ftable(cenDat[,c(10,13)],col.vars = "income")
+```
+
+```{r}
+ftable(cenDat[,c(11,13)],col.vars = "income")
+```
+
+```{r}
+ftable(cenDat[,c(12,13)],col.vars = "income")
+```
+
+### PCA (Principal Component Analysis)
+
+```{r}
+# Creating indicator variableS for categorical variables
+cenDat1 <-model.matrix(~.,data=cenDat)
+cenDat1 <- data.frame(cenDat1)
+cenDat1 <- cenDat1[-1] # Removing the x- intercept
+# scaling quantitative variables
+cenDat1[,1:5] <- scale(cenDat1[,1:5]) # Scaling quantitative variables
+str(cenDat) # 5 quantitative variables + 8 categorical variables (total 32 levels)
+str(cenDat1) # 5 original quantitative variables + 24 (32-8) indicator/ dummy variables
+```
+
+
+```{r,fig.width=12,fig.height=6}
+# PCA using prcomp. cenDat1 is already scaled.
+old.par <- par(mfrow=c(1,2),ps=16)
+cenDat1pca <- prcomp(cenDat1[,1:12]) # calculating PCA using prcomp function
+plot(cenDat1pca)
+biplot(cenDat1pca)
+par(old.par)
+```
+```{r,warning=FALSE,fig.width=12,fig.height=6}
+plot(cenDat1pca$x[,1:2],col=c("red","blue")[as.numeric(factor(cenDat1$income..50K))],pch=as.numeric(factor(cenDat1$income..50K)))
+legend("topleft",c(" >50K"," <=50K"),pch=1:2,col=c("red","blue"),text.col =c("red","blue"))
+```
+
+```{r,fig.width=12,fig.height=6}
+plot(cenDat1pca$x[,1:2],col=c("red","blue")[as.numeric(factor(cenDat1$sex.Male))],pch=as.numeric(factor(cenDat1$sex.Male)))
+legend("topleft",c(" female"," male"),pch=1:2,col=c("red","blue"),text.col =c("red","blue"))
+```
+
+```{r}
+cenDat1pca$sdev[1:5]^2/ sum(cenDat1pca$sdev^2)
+```
+##### The first principal component explains about 24% of variance in the scaled data.
+
+```{r}
+# Ist principal components (most correlated 5 variables)
+sort(abs(cenDat1pca$rotation[,1]), decreasing=T)[1:5]
+```
+
+```{r}
+# Ist principal components (least correlated 5 variables)
+sort(abs(cenDat1pca$rotation[,1]), decreasing=F)[1:5]
+```
+#### hours_per_week, education_num,age, capital_gain, and capital_loss are positively correlated to the first principal component.hours_per_week and education_num explain the most of the variability.
+
+```{r}
+# 2nd principal components
+sort(abs(cenDat1pca$rotation[,2]), decreasing=T)[1:5]
+```
+
+### chi-square test
+#### Based on the chi- square test, since the p- value is so small,we reject the null hypothesis and conclude that all categorical predictor variables are significantly associated with the outcome "income".
+
+```{r}
+table(cenDat$income,cenDat$marital_status)
+# H0: There is no association between income and marital status
+# Ha: There is association between income and marital status
+chisq.test(table(cenDat$income,cenDat$marital_status))
+chisq.test(table(cenDat$income,cenDat$marital_status))$expected
+```
+
+```{r}
+table(cenDat$income,cenDat$native_country)
+# H0: There is no association between income and native country
+# Ha: There is association between income and native country
+chisq.test(table(cenDat$income,cenDat$native_country))
+chisq.test(table(cenDat$income,cenDat$native_country))$expected
+```
+
+```{r}
+table(cenDat$income,cenDat$occupation)
+# H0: There is no association between income and occupation
+# Ha: There is association between income and occupation
+chisq.test(table(cenDat$income,cenDat$occupation))
+chisq.test(table(cenDat$income,cenDat$occupation))$expected
+```
+```{r}
+table(cenDat$income,cenDat$race)
+# H0: There is no association between income and race
+# Ha: There is association between income and race
+chisq.test(table(cenDat$income,cenDat$race))
+chisq.test(table(cenDat$income,cenDat$race))$expected
+```
+
+```{r}
+table(cenDat$income,cenDat$relationship)
+# H0: There is no association between income and relationship
+# Ha: There is association between income and relationship
+chisq.test(table(cenDat$income,cenDat$relationship))
+chisq.test(table(cenDat$income,cenDat$relationship))$expected
+```
+
+```{r}
+table(cenDat$income,cenDat$sex)
+# H0: There is no association between income and sex
+# Ha: There is association between income and sex
+chisq.test(table(cenDat$income,cenDat$sex))
+chisq.test(table(cenDat$income,cenDat$sex))$expected
+```
+
+```{r}
+table(cenDat$income,cenDat$work_class)
+# H0: There is no association between income and work class
+# Ha: There is association between income and work class
+chisq.test(table(cenDat$income,cenDat$work_class))
+chisq.test(table(cenDat$income,cenDat$work_class))$expected
+```
+
+### t-test
+#### Based on the t- test, since the p-value is small, we reject the null hypothesis and conclude that all quantitative predictor variables are significantly associated with the outcome "income". "Hours_per_week"" and "education_num"" are the two most highly associated variables to "income".
+
+```{r,fig.width=12,fig.height=6}
+# boxplot
+p1 <- ggplot(cenDat,aes(x=income,y=age,colour=income))+geom_boxplot()
+p2 <- ggplot(cenDat,aes(x=income,y=education_num,colour=income))+geom_boxplot()
+p3 <- ggplot(cenDat,aes(x=income,y=hours_per_week,colour=income))+geom_boxplot()
+p4 <- ggplot(cenDat,aes(x=income,y=capital_gain,colour=income))+geom_boxplot()
+p5 <- ggplot(cenDat,aes(x=income,y=capital_loss,colour=income))+geom_boxplot()
+multiplot(p1,p2,p3,p4,p5,cols=3)
+```
+
+```{r}
+# t test
+# H0: mean age of people with income " <=50K" = mean age of people with income " >50K"
+# Ha: mean age of people with income " <=50K" != mean age of people with income " >50K"
+# two- sided t-test
+t.test(cenDat$age~cenDat$income)
+
+```
+
+```{r}
+# t test
+# H0: mean years of education of people with income " <=50K" = mean years of education of people with income " >50K"
+# Ha: mean years of education of people with income " <=50K" != mean years of education of people with income " >50K"
+# two- sided t-test
+t.test(cenDat$education_num~cenDat$income)
+```
+
+```{r}
+# t test
+# H0: mean hours_per_week of people with income " <=50K" = mean hours_per_week of people with income " >50K"
+# Ha: mean hours_per_week of people with income " <=50K" != mean hours_per_week of people with income " >50K"
+# two- sided t-test
+t.test(cenDat$hours_per_week~cenDat$income)
+```
+
+```{r}
+# t test
+# H0: mean capital_gain of people with income " <=50K" = mean capital_gain of people with income " >50K"
+# Ha: mean capital_gain of people with income " <=50K" != mean capital_gain of people with income " >50K"
+# two- sided t-test
+t.test(cenDat$capital_gain~cenDat$income)
+```
+
+```{r}
+# t test
+# H0: mean capital_loss of people with income " <=50K" = mean capital_loss of people with income " >50K"
+# Ha: mean capital_loss of people with income " <=50K" != mean capital_loss of people with income " >50K"
+# two- sided t-test
+t.test(cenDat$capital_loss~cenDat$income)
+```
+
+
+# Problem 2: logistic regression (25 points)
+
+Develop logistic regression model of the outcome as a function of multiple predictors in the model.  Which variables are significantly associated with the outcome?  Test model performance on multiple splits of data into training and test subsets, summarize it in terms of accuracy/error, sensitivity/specificity and compare to the performance of other methods reported in the dataset description.
+
+### CONCLUSION
+
+#### Based on logistics regression summary seen below, age, number of years of education, hours per week, capital gain/ loss, marital status, occupation, family type etc. are strong predictors in distingushing income.
+
+#### After multiple splits of data into training and test subsets, mean test error is calculated as 15.3. Obtained test error is comparable with the performance of other methods reported in the dataset description. Please see below model performance (accuracy, error, sensitivity, and specificity).
+
+```{r,warning=FALSE}
+cenDatglm <- glm(income~age+education_num+hours_per_week+capital_gain+capital_loss+marital_status+native_country+occupation+race+relationship+sex+work_class, data=cenDat,family=binomial)
+summary(cenDatglm)
+```
+
+
+```{r assess_prediction function}
+assess_prediction1=function(truth,predicted){
+  
+# check for missing values (we are going to # compute metrics on non-missing values only)
+
+predicted = predicted[ ! is.na(truth) ]
+truth = truth[ ! is.na(truth) ] 
+truth = truth[ ! is.na(predicted) ]
+predicted = predicted[ ! is.na(predicted) ]
+
+Not_NA <- length(truth)
+Pred_accu_per <- sum(truth==predicted)
+accuracy <- signif(sum(truth==predicted)*100/length(truth),3)
+TP = sum(truth==" >50K" & predicted==" >50K")
+TN = sum(truth==" <=50K" & predicted==" <=50K")
+TN = sum(truth==" <=50K" & predicted==" <=50K")
+FP = sum(truth==" <=50K" & predicted==" >50K")
+FN = sum(truth==" >50K" & predicted==" <=50K")
+P = TP+FN
+N = FP+TN
+return(c(
+accuracy <-accuracy,
+testError <- 100-accuracy,
+sensitivity <- signif(100*TP/P,3),
+specificity <- signif(100*TN/N,3)
+# Precision <- signif(100*TP/(TP+FP),3),
+# false_discovery <- signif(100*FP/(TP+FP),3),
+# FPR <- signif(100*FP/N,3)
+))
+}
+```
+
+
+#### cross-validation: logistics regression
+```{r,warning=FALSE}
+k=14
+set.seed(6980)
+test_error <- numeric(k)
+results.glm <- matrix(NA,nrow=k,ncol=4)
+colnames(results.glm) <- c("accuracy","testError","sensitivity","specificity")
+folds=sample(1:k,nrow(cenDat), replace=TRUE)
+for (i in 1:k){
+  glm_train <- cenDat[folds!=i,]
+  glm_test <- cenDat[folds==i,]
+  glm.fits <- glm(income~age+education_num+hours_per_week+capital_gain+capital_loss+marital_status+native_country+occupation+race+relationship+sex+work_class,data=glm_train,family=binomial)
+  glm.prob <- predict(glm.fits,glm_test,type="response")
+  glm.pred=rep(" <=50K",nrow(glm_test))
+  glm.pred[glm.prob>0.5]=" >50K"
+  test_error [i] <- signif((mean(glm.pred != glm_test$income)*100),3)
+  results.glm[i,] <- assess_prediction1(glm_test$income,glm.pred)
+}
+```
+
+```{r}
+results.glm
+mean(test_error)
+```
+
+
+# Problem 3: random forest (25 points)
+
+Develop random forest model of the categorized income. Present variable importance plots and comment on relative importance of different attributes in the model.  Did attributes showing up as more important in random forest model also appear as significantly associated with the outcome by logistic regression?  Test model performance on multiple splits of data into training and test subsets, compare test and out-of-bag error estimates, summarize model performance in terms of accuracy/error, sensitivity/specificity and compare to the performance of other methods reported in the dataset description.
+
+### CONCLUSION
+#### After multiple splits of data into training and test subsets, mean test error is calculated as 13.77857. Obtained test error is lower than the performance of other methods reported in the dataset description. Please see below model performance (accuracy, error, sensitivity, specificity, and OOB error). OOB error and test error are comparable. The out-of-bag (OOB) error is the average error for each bootstap sample calculated using predictions from the trees that do not contain obseravations in their respective bootstrap sample. There is evidence to show that the out-of-bag estimate is as accurate as using a test set of the same size as the training set. Therefore, using the out-of-bag error estimate removes the need for a set aside test set.
+
+#### Variable Importance: Random Forest
+
+```{r,fig.width=12,fig.height=6}
+set.seed(6980)
+train <- sample(1:nrow(cenDat),nrow(cenDat)/2) # train- training set
+cenDat.test <- cenDat[-train,"income"] # cenDat.test = test data set
+cenDatrf <- randomForest(income~., data=cenDat,subset=train, importance=TRUE) # running randomForest function
+cenDatrf$importance
+varImpPlot(cenDatrf, main="Plotting Variable Importance",color="brown") # plotting variable importance
+```
+
+
+
+#### cross-validation: Random Forest
+```{r,warning=FALSE}
+k=14
+set.seed(6980)
+test_error <- numeric(k)
+results.rf <- matrix(NA,nrow=k,ncol=4)
+colnames(results.rf) <- c("accuracy","testError","sensitivity","specificity")
+mean_OOB_error <- matrix(NA,nrow=k,ncol=1)
+colnames(mean_OOB_error) <- "OOB_error"
+folds=sample(1:k,nrow(cenDat), replace=TRUE)
+for (i in 1:k){
+  rf_train <- cenDat[folds!=i,] # train data
+  rf_test <- cenDat[folds==i,] # test data
+  rf.fits <- randomForest(income~.,data=rf_train,importance=TRUE) # running randomForest function
+  rf.pred <- predict(rf.fits, newdata=rf_test) # predicting on test data
+  test_error[i] <- signif((mean(rf.pred != rf_test$income)*100),3)
+  results.rf[i,] <- assess_prediction1(rf_test$income,rf.pred)
+  mean_OOB_error[i,] <- signif((mean(rf.fits$err.rate[,1]))*100,3)
+  final_results <- cbind(results.rf,mean_OOB_error)
+}
+```
+
+
+```{r}
+final_results
+mean(test_error)
+```
+
+
+# Problem 4: SVM (25 points)
+
+Develop SVM model of this data choosing parameters (e.g. choice of kernel, cost, etc.) that appear to yield better performance.  Test model performance on multiple splits of data into training and test subsets, summarize model performance in terms of accuracy/error, sensitivity/specificity and compare to the performance of other methods reported in the dataset description.
+
+### CONCLUSION:
+
+#### After multiple splits of data into training and test subsets (kernel= radial, cost=0.5,gamma=0.1- this is the one provided the least error rate after trying on smaller data set.), mean test error is calculated as 14.83571. Obtained test error is comparable to other methods reported in the dataset description. Please see below model performance (accuracy, error, sensitivity, and specificity).
+
+###### Looking for optimum values for cost and gamma: radial kernel-Support Vector Machine
+```{r radialTest,warning=FALSE,fig.width=12,fig.height=8}
+cendat <- cenDat[1:500,] #subset of cenDat
+dfTmp <- NULL
+for ( iSim in 1:10) {
+  trainIdx <- sample(nrow(cendat),nrow(cendat),replace=TRUE)
+  # radial:
+  svmTuneRes <- tune(svm,income~.,data=cendat[trainIdx,],kernel="radial",ranges=list(cost=c(1,2,5,10,20),gamma=c(0.01,0.02,0.05,0.1)))
+  tblTmp <- table(cendat[-trainIdx,"income"],predict(svmTuneRes$best.model,newdata=cendat[-trainIdx,]))
+  #print(tblTmp)
+  #cat(svmTuneRes$best.parameters[1,"cost"],svmTuneRes$best.parameters[1,"gamma"],c(tblTmp[1,2]/sum(tblTmp[1,]),tblTmp[2,1]/sum(tblTmp[2,]),1-sum(diag(tblTmp))/sum(tblTmp)),fill=TRUE)
+  dfTmp <- rbind(dfTmp,data.frame(kernel="radial",attr=c("cost","gamma","err0","err1","errTot"),value=c(svmTuneRes$best.parameters[1,"cost"],svmTuneRes$best.parameters[1,"gamma"],tblTmp[1,2]/sum(tblTmp[1,]),tblTmp[2,1]/sum(tblTmp[2,]),1-sum(diag(tblTmp))/sum(tblTmp))))
+}
+ggplot(dfTmp,aes(x=attr,y=value))+geom_jitter()+scale_y_log10()
+ddply(dfTmp,"attr",function(x)mean(x[,"value"]))
+ddply(dfTmp,"attr",function(x)median(x[,"value"]))
+```
+
+###### Looking for optimum values for cost and gamma: polynomial kernel-Support Vector Machine
+```{r polynomTest,warning=FALSE,fig.width=12,fig.height=6}
+cendat <- cenDat[1:500,] #subset of cenDat
+dfTmp <- NULL
+for ( iSim in 1:10) {
+  trainIdx <- sample(nrow(cendat),nrow(cendat),replace=TRUE)
+  # polynomial:
+  svmTuneRes <- tune(svm,income~.,data=cendat[trainIdx,],kernel="polynomial",tunecontrol=tune.control(cross=5),ranges=list(cost=1:3,degree=2:4,coef0=c(0,0.5,1),gamma=c(0.2,0.5,1.0)))
+  tblTmp <- table(cendat[-trainIdx,"income"],predict(svmTuneRes$best.model,newdata=cendat[-trainIdx,]))
+  #print(tblTmp)
+  #print(svmTuneRes$best.parameters)
+  dfTmp <- rbind(dfTmp,data.frame(kernel="polynom",attr=c("cost","degree","coef0","gamma","err0","err1","totErr"),value=c(as.numeric(svmTuneRes$best.parameters[1,]),tblTmp[1,2]/sum(tblTmp[1,]),tblTmp[2,1]/sum(tblTmp[2,]),1-sum(diag(tblTmp))/sum(tblTmp))))
+}
+ggplot(dfTmp,aes(x=attr,y=value))+geom_jitter()+scale_y_log10(breaks=c(0.1,0.2,0.5,1,2,5))
+ddply(dfTmp,"attr",function(x)mean(x[,"value"]))
+ddply(dfTmp,"attr",function(x)median(x[,"value"]))
+```
+
+
+#### cross-validation: Support Vector Machine on the complete dataset (cenDat)
+```{r,warning=FALSE}
+k=14
+set.seed(6980)
+test_error <- numeric(k)
+results.svm <- matrix(NA,nrow=k,ncol=4)
+colnames(results.svm) <- c("accuracy","testError","sensitivity","specificity")
+folds <- sample(1:k,nrow(cenDat), replace=TRUE)
+for (i in 1:k){
+  svm_train <- cenDat[folds!=i,]
+  svm_test <- cenDat[folds==i,]
+  svm.fits <- svm(income~.,data=svm_train,kernel="radial",cost=0.5,gamma=0.1)
+  svm.pred <- predict(svm.fits,svm_test)
+  test_error[i] <- signif((mean(svm.pred != svm_test$income)*100),3)
+  results.svm[i,] <- assess_prediction1(svm_test$income,svm.pred)
+}
+```
+
+
+```{r}
+results.svm
+mean(test_error)
+```
+
+
+# Problem 5: compare logistic regression, random forest and SVM model performance (5 points)
+
+Compare performance of the models developed above (logistic regression, random forest, SVM) in terms of their accuracy, error and sensitivity/specificity.  Comment on differences and similarities between them.
+
+### CONCLUSION:
+
+#### Random Forest gives the most accuracy, followed by Support Vector Machine and Logistics Regression as shown in the below boxplots (which compares accuracy, test error, sensitivity and specificity).
+
+#### comparison of model performance: logistic regression (LR), random forest(RF) and Support vector Machine (SVM)
+
+```{r,fig.width=12,fig.height=6}
+glm.per <- data.frame(results.glm) # creating a data frame "glm.per"" for Logistics Regression Performance
+glm.per$ model <- "LR" # adding a new column "LR" for Logistics Regression to glm.per
+
+rf.per <- data.frame(results.rf) # creating a data frame "rf.per"" for Random Forest Performance
+rf.per$ model <- "RF" # adding a new column "RF" for Random Forest to "rf.per"
+
+svm.per <- data.frame(results.svm) # creating a data frame "svm.per"" for Support Vector Machine Performance
+svm.per$ model <- "SVM" # adding a new column "SVM" for Support Vector Machine to "svm.per"
+
+compModels <- rbind(glm.per,rf.per,svm.per) # combining "glm.per","rf.per" and "svm.per" to "compModels"
+
+p1 <- ggplot(compModels,aes(x=model,y=accuracy,colour=model))+geom_boxplot()
+p2 <- ggplot(compModels,aes(x=model,y=testError,colour=model))+geom_boxplot()
+p3 <- ggplot(compModels,aes(x=model,y=sensitivity,colour=model))+geom_boxplot()
+p4 <- ggplot(compModels,aes(x=model,y=specificity,colour=model))+geom_boxplot()
+multiplot(p1,p2,p3,p4,cols=4)
+```
+
+
+# Extra 10 points: KNN model
+
+Develop KNN model for this data, evaluate its performance for different values of $k$ on different splits of the data into training and test and compare it to the performance of other methods reported in the dataset description.  Notice that this dataset includes many categorical variables as well as continuous attributes measured on different scales, so that the distance has to be defined to be meaningful (probably avoiding subtraction of the numerical values of multi-level factors directly or adding differences between untransformed age and capital gain/loss attributes).
+
+# Extra 15 points: variable importance in SVM
+
+SVM does not appear to provide readily available tools for judging relative importance of different attributes in the model.  Please evaluate here an approach similar to that employed by random forest where importance of any given attribute is measured by the decrease in model performance upon randomization of the values for this attribute.
